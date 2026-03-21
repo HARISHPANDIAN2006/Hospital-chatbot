@@ -545,8 +545,7 @@ async def chat_endpoint(request: Request):
         
         print(f"Received query: {query}")
         
-        # Import AI MCP modules with fallback for environments where a different
-        # package named "mcp" exists.
+        # Import AI MCP modules
         try:
             from mcp.controller import MCPController
             from mcp.executor import MCPExecutor
@@ -556,14 +555,15 @@ async def chat_endpoint(request: Request):
         
         mcp = MCPController()
         
-        # Create executor with HTTP MCP client (stable sync flow)
+        # Create executor
         mcp_executor = MCPExecutor()
         
         action = mcp.decide(query)
         print(f"Action decided: {action}")
         
         if action == "RUN_MCP":
-            result = mcp_executor.execute(
+            # ✅ CORRECT - Added await
+            result = await mcp_executor.execute(
                 intent=mcp.intent_classifier.classify(query),
                 query=query
             )

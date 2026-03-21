@@ -1,95 +1,32 @@
 import json
 import os
 import re
-
-try:
-    from google import genai as google_genai  # New SDK: google-genai
-except Exception:
-    google_genai = None
-
-try:
-    import google.generativeai as google_generativeai  # Legacy SDK: google-generativeai
-except Exception:
-    google_generativeai = None
+from langchain_ollama import OllamaLLM
 from dotenv import load_dotenv
 
 try:
-    from mcp.client import MCPClient
+    from mcp.direct_client import DirectMCPClient
 except (ModuleNotFoundError, ImportError):
-    from client import MCPClient
+    from direct_client import DirectMCPClient
 
 load_dotenv()
 
 
 class MCPExecutor:
     def __init__(self):
-        self.client = MCPClient()
-        self.sdk = None
+        self.client = DirectMCPClient()
+        self.llm = None
+        
         try:
-            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-            if not api_key:
-                raise RuntimeError("Missing GOOGLE_API_KEY or GEMINI_API_KEY in environment")
-            model_name = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-            self.model_name = model_name
-
-            if google_genai is not None:
-                self.client_llm = google_genai.Client(api_key=api_key)
-                self.sdk = "google-genai"
-            elif google_generativeai is not None:
-                google_generativeai.configure(api_key=api_key)
-                self.client_llm = google_generativeai.GenerativeModel(self.model_name)
-                self.sdk = "google-generativeai"
-            else:
-                raise RuntimeError(
-                    "Gemini SDK not installed. Install one of: 'google-genai' or 'google-generativeai'."
-                )
-
-            self.llm = True
-            print(f"Using Gemini ({model_name}) for NLP extraction via {self.sdk}")
+            ollama_model = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+            self.llm = OllamaLLM(model=ollama_model)
+            print(f"✅ Using Ollama ({ollama_model}) for NLP extraction")
         except Exception as e:
-            print(f"Gemini not available: {e}")
+            print(f"⚠️ Ollama not available: {e}")
             self.llm = None
-            self.model_name = ""
-            self.client_llm = None
-
-    def _invoke_gemini(self, prompt: str) -> str:
-        if not self.llm:
-            raise RuntimeError("Gemini not configured")
-        try:
-            if self.sdk == "google-genai":
-                response = self.client_llm.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config={"temperature": 0.1},
-                )
-                text = (getattr(response, "text", "") or "").strip()
-                if text:
-                    return text
-                if getattr(response, "candidates", None):
-                    parts = []
-                    for candidate in response.candidates:
-                        content = getattr(candidate, "content", None)
-                        if not content:
-                            continue
-                        for part in getattr(content, "parts", []) or []:
-                            if getattr(part, "text", ""):
-                                parts.append(part.text)
-                    return "\n".join(parts).strip()
-                return ""
-
-            response = self.client_llm.generate_content(
-                prompt,
-                generation_config={"temperature": 0.1},
-            )
-            return (getattr(response, "text", "") or "").strip()
-        except Exception as e:
-            err = str(e).lower()
-            if "429" in err or "quota" in err or "rate limit" in err:
-                # Disable Gemini for this process and continue with rule-based parsing.
-                self.llm = None
-            raise
 
     def _extract_patient_rule_based(self, query: str) -> dict:
+        """Fallback rule-based extraction for patient registration"""
         q = query
         data = {
             "name": None,
@@ -102,7 +39,7 @@ class MCPExecutor:
             "allergies": None,
         }
 
-        name_match = re.search(r"(?:named|name is)\s+([a-zA-Z .'-]{2,60})", q, re.IGNORECASE)
+        name_match = re.search(r"(?:named|name is|patient)\s+([a-zA-Z .'-]{2,60})", q, re.IGNORECASE)
         if name_match:
             data["name"] = name_match.group(1).strip(" ,.")
 
@@ -139,6 +76,7 @@ class MCPExecutor:
         return data
 
     def _extract_appointment_rule_based(self, query: str) -> dict:
+        """Fallback rule-based extraction for appointment booking"""
         q = query
         data = {
             "patient_id": None,
@@ -181,7 +119,8 @@ class MCPExecutor:
         if spec_match:
             data["specialization"] = spec_match.group(1)
 
-        reason_match = re.search(r"(?:for|reason\s*(?:is|:))\s+([^,.]+)", q, re.IGNORECASE)
+        # Better reason extraction - looks for "for [reason]" at the end
+        reason_match = re.search(r"(?:for|reason\s*(?:is|:))\s+([^,.]+?)(?:\s*$|\.)", q, re.IGNORECASE)
         if reason_match:
             data["reason"] = reason_match.group(1).strip()
 
@@ -191,45 +130,12 @@ class MCPExecutor:
 
         return data
 
-    def generate_human_response(self, result: dict, intent: str) -> str:
+    def extract_patient_with_ollama(self, query: str) -> dict:
+        """Use Ollama to extract patient registration details"""
         if not self.llm:
-            return json.dumps(result, indent=2)
-
-        prompt = f"""You are a friendly hospital chatbot assistant. Convert this technical response into a natural, human-friendly message.
-
-Intent: {intent}
-Technical Response: {json.dumps(result)}
-
-Rules:
-1. Be warm, professional, and conversational
-2. If successful, confirm the action
-3. If error, explain the problem clearly and suggest next step
-4. Include important IDs, names, dates when present
-5. Keep it concise (2-4 sentences)
-
-Human-friendly response:"""
-
-        try:
-            text = self._invoke_gemini(prompt)
-            return text or json.dumps(result, indent=2)
-        except Exception:
-            return json.dumps(result, indent=2)
-
-    def _extract_json(self, response: str) -> dict:
-        response = response.replace("```json", "").replace("```", "").strip()
-
-        json_match = re.search(r"\{[\s\S]*\}", response)
-        if json_match:
-            response = json_match.group(0)
-
-        data = json.loads(response)
-        for key, value in list(data.items()):
-            if value in ("null", "None"):
-                data[key] = None
-        return data
-
-    def extract_patient_with_gemini(self, query: str) -> dict:
-        prompt = f"""Extract patient registration details from this query: \"{query}\"
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract patient registration details from this query: "{query}"
 
 Return ONLY a valid JSON object with these fields (use null for missing fields):
 {{
@@ -245,17 +151,40 @@ Return ONLY a valid JSON object with these fields (use null for missing fields):
 
 Return ONLY the JSON, no other text."""
 
-        response = self._invoke_gemini(prompt)
-        data = self._extract_json(response)
-
+        response = self.llm.invoke(prompt)
+        response = response.strip()
+        
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        data = json.loads(response)
+        for key in data:
+            if data[key] == "null" or data[key] == "None":
+                data[key] = None
+        
         if data.get("age") is not None:
             data["age"] = int(data["age"])
+        
         return data
 
-    def extract_appointment_with_gemini(self, query: str) -> dict:
-        prompt = f"""Extract appointment booking details from this query: \"{query}\"
+    def extract_appointment_with_ollama(self, query: str):
+        """Use Ollama to extract appointment details from natural language"""
+        if not self.llm:
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract appointment booking details from this query: "{query}"
 
-Return ONLY a valid JSON object:
+Pay special attention to:
+- "for patient ID [id]" or "patient [id]" → patient_id
+- "with Dr. [name]" or "doctor [name]" → doctor_name
+- "on [date]" → date in YYYY-MM-DD format
+- "at [time]" → time in HH:MM 24-hour format
+- "for [reason]" at the END → reason (e.g., "for chest pain" means reason is "chest pain")
+
+Return ONLY valid JSON:
 {{
     "patient_id": "patient ID or null",
     "doctor_id": "doctor ID or null",
@@ -263,24 +192,246 @@ Return ONLY a valid JSON object:
     "specialization": "medical specialization or null",
     "date": "appointment date in YYYY-MM-DD format or null",
     "time": "appointment time in HH:MM format (24-hour) or null",
-    "reason": "reason for appointment or null",
+    "reason": "reason for appointment (extract from 'for [reason]') or null",
     "symptoms": "symptoms or null"
 }}
 
+Examples:
+Query: "book appointment for patient 123 with Dr. John on 2026-03-20 at 14:00 for headache"
+Output: {{"patient_id":"123", "doctor_name":"Dr. John", "date":"2026-03-20", "time":"14:00", "reason":"headache"}}
+
+Query: "book appointment for patient 456 with cardiologist on 2026-03-25 at 10:30 for chest pain"
+Output: {{"patient_id":"456", "specialization":"cardiology", "date":"2026-03-25", "time":"10:30", "reason":"chest pain"}}
+
 Return ONLY the JSON, no other text."""
 
-        response = self._invoke_gemini(prompt)
-        return self._extract_json(response)
+        response = self.llm.invoke(prompt)
+        response = response.strip()
+        
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        try:
+            data = json.loads(response)
+            # Convert string "null" to None
+            for key in data:
+                if data[key] == "null" or data[key] == "None":
+                    data[key] = None
+            
+            # Debug print
+            print(f"📋 Extracted appointment data: {data}")
+            
+            return data
+        except json.JSONDecodeError as e:
+            print(f"❌ Failed to parse JSON: {response}")
+            raise Exception(f"Could not parse LLM response: {str(e)}")
 
-    def execute(self, intent: str, query: str):
-        if intent == "SEARCH_DOCTORS":
-            specialty = query.lower()
-            specialty = specialty.replace("search doctors of", "").strip()
-            specialty = specialty.replace("search doctors", "").strip()
-            specialty = specialty.replace("find doctors", "").strip()
+    def extract_patient_id(self, query: str):
+        """Extract patient ID from query"""
+        if not self.llm:
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract patient ID from: "{query}"
+Return ONLY valid JSON: {{"patient_id": "ID or null"}}
+Return ONLY the JSON."""
 
+        response = self.llm.invoke(prompt).strip()
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        data = json.loads(response)
+        if data.get("patient_id") == "null":
+            data["patient_id"] = None
+        return data
+
+    def extract_doctor_id(self, query: str):
+        """Extract doctor ID from query"""
+        if not self.llm:
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract doctor ID from: "{query}"
+Return ONLY valid JSON: {{"doctor_id": "ID or null"}}
+Return ONLY the JSON."""
+
+        response = self.llm.invoke(prompt).strip()
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        data = json.loads(response)
+        if data.get("doctor_id") == "null":
+            data["doctor_id"] = None
+        return data
+
+    def extract_appointment_id(self, query: str):
+        """Extract appointment ID from query"""
+        if not self.llm:
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract appointment ID from: "{query}"
+Return ONLY valid JSON: {{"appointment_id": "ID or null"}}
+Return ONLY the JSON."""
+
+        response = self.llm.invoke(prompt).strip()
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        data = json.loads(response)
+        if data.get("appointment_id") == "null":
+            data["appointment_id"] = None
+        return data
+
+    def extract_reschedule_details(self, query: str):
+        """Extract reschedule details from query"""
+        if not self.llm:
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract reschedule details from: "{query}"
+Return ONLY valid JSON: {{"appointment_id": "ID or null", "new_date": "YYYY-MM-DD or null", "new_time": "HH:MM or null"}}
+Return ONLY the JSON."""
+
+        response = self.llm.invoke(prompt).strip()
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        data = json.loads(response)
+        for key in data:
+            if data[key] == "null":
+                data[key] = None
+        return data
+
+    def extract_update_profile_details(self, query: str):
+        """Extract profile update details from query"""
+        if not self.llm:
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract patient profile update details from: "{query}"
+Return ONLY valid JSON with patient_id and fields to update: 
+{{"patient_id": "ID or null", "updates": {{"field": "value"}}}}
+Return ONLY the JSON."""
+
+        response = self.llm.invoke(prompt).strip()
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        data = json.loads(response)
+        for key in data:
+            if data[key] == "null":
+                data[key] = None
+        return data
+
+    def extract_consultation_details(self, query: str):
+        """Extract consultation processing details from query"""
+        if not self.llm:
+            raise Exception("Ollama not configured")
+        
+        prompt = f"""Extract consultation processing details from: "{query}"
+Return ONLY valid JSON:
+{{"appointment_id": "ID or null", "audio_filename": "filename or null", "send_email": true/false}}
+Return ONLY the JSON."""
+
+        response = self.llm.invoke(prompt).strip()
+        json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+        if json_match:
+            response = json_match.group(0)
+        response = response.replace("```json", "").replace("```", "").strip()
+        
+        data = json.loads(response)
+        for key in data:
+            if data[key] == "null":
+                data[key] = None
+        return data
+
+    def generate_human_response(self, result: dict, intent: str) -> str:
+        """Generate human-friendly response from MCP result"""
+        if not self.llm:
+            return json.dumps(result, indent=2)
+
+        prompt = f"""You are a friendly hospital chatbot assistant. Convert this technical response into a natural, human-friendly message.
+
+Intent: {intent}
+Technical Response: {json.dumps(result)}
+
+Rules:
+1. Be warm, professional, and conversational
+2. If successful, confirm the action
+3. If error, explain the problem clearly and suggest next step
+4. Include important IDs, names, dates when present
+5. Keep it concise (2-4 sentences)
+6. Use emojis sparingly (1-2 max)
+
+Human-friendly response:"""
+
+        try:
+            response = self.llm.invoke(prompt)
+            return response.strip() or json.dumps(result, indent=2)
+        except Exception:
+            return json.dumps(result, indent=2)
+
+    async def execute(self, intent: str, query: str):
+        """Execute MCP tool based on intent"""
+        
+        # === REGISTER PATIENT ===
+        if intent == "REGISTER_PATIENT":
             try:
-                result = self.client.call("search_doctors", {"specialization": specialty})
+                if self.llm:
+                    print("🤖 Extracting patient details...")
+                    try:
+                        details = self.extract_patient_with_ollama(query)
+                    except Exception:
+                        details = self._extract_patient_rule_based(query)
+                else:
+                    details = self._extract_patient_rule_based(query)
+
+                required = ["name", "age", "gender", "contact"]
+                missing = [f for f in required if not details.get(f)]
+
+                if missing:
+                    missing_info = {
+                        "error": f"Missing required information: {', '.join(missing)}",
+                        "missing_fields": missing,
+                        "example": "Try saying: 'Register patient named Sarah Smith, 28 years old, female, contact 9876543210'",
+                    }
+                    return {
+                        "human_response": self.generate_human_response(missing_info, intent),
+                        "raw_data": missing_info,
+                    }
+
+                details = {k: v for k, v in details.items() if v is not None}
+
+                print(f"Registering patient: {details.get('name')}...")
+                result = await self.client.call("register_patient", details)
+                return {
+                    "human_response": self.generate_human_response(result, intent),
+                    "raw_data": result,
+                }
+
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {
+                    "human_response": self.generate_human_response(error_result, intent),
+                    "raw_data": error_result,
+                }
+
+        # === SEARCH DOCTORS ===
+        elif intent == "SEARCH_DOCTORS":
+            try:
+                specialty = query.lower()
+                specialty = specialty.replace("search doctors", "").replace("find doctors", "").strip()
+                
+                result = await self.client.call("search_doctors", {"specialization": specialty})
                 return {
                     "human_response": self.generate_human_response(result, intent),
                     "raw_data": result,
@@ -292,13 +443,15 @@ Return ONLY the JSON, no other text."""
                     "raw_data": error_result,
                 }
 
-        if intent == "BOOK_APPOINTMENT":
+        # === BOOK APPOINTMENT ===
+        elif intent == "BOOK_APPOINTMENT":
             try:
                 if self.llm:
-                    print("\nExtracting appointment details...")
+                    print("🤖 Extracting appointment details...")
                     try:
-                        details = self.extract_appointment_with_gemini(query)
-                    except Exception:
+                        details = self.extract_appointment_with_ollama(query)
+                    except Exception as e:
+                        print(f"Ollama extraction failed: {e}, using rule-based")
                         details = self._extract_appointment_rule_based(query)
                 else:
                     details = self._extract_appointment_rule_based(query)
@@ -326,10 +479,11 @@ Return ONLY the JSON, no other text."""
                         "raw_data": missing_info,
                     }
 
+                # Find doctor if not provided
                 if not details.get("doctor_id"):
                     if details.get("doctor_name"):
                         print(f"\nSearching for doctor: {details['doctor_name']}")
-                        doctor_result = self.client.call("search_doctors", {"name": details["doctor_name"]})
+                        doctor_result = await self.client.call("search_doctors", {"name": details["doctor_name"]})
                         if doctor_result.get("doctors") and len(doctor_result["doctors"]) > 0:
                             details["doctor_id"] = doctor_result["doctors"][0]["_id"]
                             print(f"Found: {doctor_result['doctors'][0]['name']}")
@@ -341,7 +495,7 @@ Return ONLY the JSON, no other text."""
                             }
                     elif details.get("specialization"):
                         print(f"\nSearching for {details['specialization']} doctors...")
-                        doctor_result = self.client.call("search_doctors", {"specialization": details["specialization"]})
+                        doctor_result = await self.client.call("search_doctors", {"specialization": details["specialization"]})
                         if doctor_result.get("doctors") and len(doctor_result["doctors"]) > 0:
                             details["doctor_id"] = doctor_result["doctors"][0]["_id"]
                             print(f"Found: {doctor_result['doctors'][0]['name']}")
@@ -363,18 +517,12 @@ Return ONLY the JSON, no other text."""
                     appointment_data["symptoms"] = details["symptoms"]
 
                 print("\nBooking appointment...")
-                result = self.client.call("book_appointment", appointment_data)
+                result = await self.client.call("book_appointment", appointment_data)
                 return {
                     "human_response": self.generate_human_response(result, intent),
                     "raw_data": result,
                 }
 
-            except ValueError as e:
-                error_result = {"error": f"Invalid input format: {str(e)}"}
-                return {
-                    "human_response": self.generate_human_response(error_result, intent),
-                    "raw_data": error_result,
-                }
             except Exception as e:
                 error_result = {"error": str(e)}
                 return {
@@ -382,56 +530,202 @@ Return ONLY the JSON, no other text."""
                     "raw_data": error_result,
                 }
 
-        if intent == "REGISTER_PATIENT":
+        # === GET PATIENT PROFILE ===
+        elif intent == "GET_PATIENT_PROFILE":
             try:
-                if self.llm:
-                    print("\nExtracting patient details...")
-                    try:
-                        details = self.extract_patient_with_gemini(query)
-                    except Exception:
-                        details = self._extract_patient_rule_based(query)
-                else:
-                    details = self._extract_patient_rule_based(query)
-
-                required = ["name", "age", "gender", "contact"]
-                missing = [f for f in required if not details.get(f)]
-
-                if missing:
-                    missing_info = {
-                        "error": f"Missing required information: {', '.join(missing)}",
-                        "missing_fields": missing,
-                        "example": "Try saying: 'Register patient named Sarah Smith, 28 years old, female, contact 9876543210'",
-                    }
+                details = self.extract_patient_id(query)
+                if not details.get("patient_id"):
                     return {
-                        "human_response": self.generate_human_response(missing_info, intent),
-                        "raw_data": missing_info,
+                        "human_response": "I need a patient ID to view the profile. Please provide the patient ID.",
+                        "raw_data": {"error": "Missing patient_id"}
                     }
-
-                details = {k: v for k, v in details.items() if v is not None}
-
-                print(f"Registering patient: {details.get('name')}...\n")
-                result = self.client.call("register_patient", details)
-                return {
-                    "human_response": self.generate_human_response(result, intent),
-                    "raw_data": result,
-                }
-
-            except ValueError as e:
-                error_result = {
-                    "error": f"Invalid input format: {str(e)}. Please make sure age is a number."
-                }
-                return {
-                    "human_response": self.generate_human_response(error_result, intent),
-                    "raw_data": error_result,
-                }
+                
+                result = await self.client.call("get_patient_profile", {"patient_id": details["patient_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
             except Exception as e:
                 error_result = {"error": str(e)}
-                return {
-                    "human_response": self.generate_human_response(error_result, intent),
-                    "raw_data": error_result,
-                }
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
 
-        return {
-            "human_response": "I can help with registering patients, searching doctors, and booking appointments.",
-            "raw_data": {"error": "Unsupported MCP intent"},
-        }
+        # === UPDATE PATIENT PROFILE ===
+        elif intent == "UPDATE_PATIENT_PROFILE":
+            try:
+                details = self.extract_update_profile_details(query)
+                if not details.get("patient_id"):
+                    return {
+                        "human_response": "I need a patient ID to update the profile.",
+                        "raw_data": {"error": "Missing patient_id"}
+                    }
+                
+                result = await self.client.call("update_patient_profile", details)
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === GET DOCTOR INFO ===
+        elif intent == "GET_DOCTOR_INFO":
+            try:
+                details = self.extract_doctor_id(query)
+                if not details.get("doctor_id"):
+                    return {
+                        "human_response": "I need a doctor ID to get their information.",
+                        "raw_data": {"error": "Missing doctor_id"}
+                    }
+                
+                result = await self.client.call("get_doctor_info", {"doctor_id": details["doctor_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === GET MY APPOINTMENTS ===
+        elif intent == "GET_MY_APPOINTMENTS":
+            try:
+                details = self.extract_patient_id(query)
+                if not details.get("patient_id"):
+                    return {
+                        "human_response": "I need a patient ID to view appointments.",
+                        "raw_data": {"error": "Missing patient_id"}
+                    }
+                
+                result = await self.client.call("get_my_appointments", {"patient_id": details["patient_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === RESCHEDULE APPOINTMENT ===
+        elif intent == "RESCHEDULE_APPOINTMENT":
+            try:
+                details = self.extract_reschedule_details(query)
+                if not details.get("appointment_id"):
+                    return {
+                        "human_response": "I need an appointment ID to reschedule.",
+                        "raw_data": {"error": "Missing appointment_id"}
+                    }
+                
+                result = await self.client.call("reschedule_appointment", details)
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === CANCEL APPOINTMENT ===
+        elif intent == "CANCEL_APPOINTMENT":
+            try:
+                details = self.extract_appointment_id(query)
+                if not details.get("appointment_id"):
+                    return {
+                        "human_response": "I need an appointment ID to cancel.",
+                        "raw_data": {"error": "Missing appointment_id"}
+                    }
+                
+                result = await self.client.call("cancel_appointment", {"appointment_id": details["appointment_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === GET MEDICAL HISTORY ===
+        elif intent == "GET_MEDICAL_HISTORY":
+            try:
+                details = self.extract_patient_id(query)
+                if not details.get("patient_id"):
+                    return {
+                        "human_response": "I need a patient ID to view medical history.",
+                        "raw_data": {"error": "Missing patient_id"}
+                    }
+                
+                result = await self.client.call("get_medical_history", {"patient_id": details["patient_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === GET PRESCRIPTIONS ===
+        elif intent == "GET_PRESCRIPTIONS":
+            try:
+                details = self.extract_patient_id(query)
+                if not details.get("patient_id"):
+                    return {
+                        "human_response": "I need a patient ID to view prescriptions.",
+                        "raw_data": {"error": "Missing patient_id"}
+                    }
+                
+                result = await self.client.call("get_prescriptions", {"patient_id": details["patient_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === GET LAB REPORTS ===
+        elif intent == "GET_LAB_REPORTS":
+            try:
+                details = self.extract_patient_id(query)
+                if not details.get("patient_id"):
+                    return {
+                        "human_response": "I need a patient ID to view lab reports.",
+                        "raw_data": {"error": "Missing patient_id"}
+                    }
+                
+                result = await self.client.call("get_lab_reports", {"patient_id": details["patient_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === GET APPOINTMENT REMINDERS ===
+        elif intent == "GET_APPOINTMENT_REMINDERS":
+            try:
+                details = self.extract_patient_id(query)
+                if not details.get("patient_id"):
+                    return {
+                        "human_response": "I need a patient ID to view appointment reminders.",
+                        "raw_data": {"error": "Missing patient_id"}
+                    }
+                
+                result = await self.client.call("get_appointment_reminders", {"patient_id": details["patient_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === GET HEALTH SUMMARY ===
+        elif intent == "GET_HEALTH_SUMMARY":
+            try:
+                details = self.extract_patient_id(query)
+                if not details.get("patient_id"):
+                    return {
+                        "human_response": "I need a patient ID to generate health summary.",
+                        "raw_data": {"error": "Missing patient_id"}
+                    }
+                
+                result = await self.client.call("get_health_summary", {"patient_id": details["patient_id"]})
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === PROCESS CONSULTATION ===
+        elif intent == "PROCESS_CONSULTATION":
+            try:
+                details = self.extract_consultation_details(query)
+                
+                if not details.get("appointment_id"):
+                    return {
+                        "human_response": "I need an appointment ID to process the consultation. Please provide the appointment ID.",
+                        "raw_data": {"error": "Missing appointment_id"}
+                    }
+                
+                result = await self.client.call("process_consultation", details)
+                return {"human_response": self.generate_human_response(result, intent), "raw_data": result}
+            except Exception as e:
+                error_result = {"error": str(e)}
+                return {"human_response": self.generate_human_response(error_result, intent), "raw_data": error_result}
+
+        # === UNKNOWN INTENT ===
+        else:
+            return {
+                "human_response": "I can help with registering patients, searching doctors, booking appointments, and managing medical records.",
+                "raw_data": {"error": "Unsupported intent"},
+            }

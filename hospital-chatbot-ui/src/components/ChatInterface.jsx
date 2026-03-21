@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import axios from 'axios';
-import { Send, User, Bot, Hospital, Search, UserPlus, Calendar } from 'lucide-react';
+import { Send, User, Bot, Hospital, Search, UserPlus, Calendar, FileText, Pill, Activity } from 'lucide-react';
 
 const API_BASE_URL = 'http://localhost:3333';
 
@@ -62,11 +62,23 @@ function ChatInterface() {
   };
 
   const quickActions = [
-    { icon: Search, text: 'Find cardiologists', color: 'blue' },
-    { icon: UserPlus, text: 'Register new patient', color: 'green' },
-    { icon: Calendar, text: 'Book appointment', color: 'purple' }
-  ];
-
+  // Patient Management
+  { icon: UserPlus, text: 'Register patient', color: 'border-green-500 text-green-600 hover:bg-green-500' },
+  { icon: User, text: 'View patient profile', color: 'border-blue-500 text-blue-600 hover:bg-blue-500' },
+  
+  // Doctor Search
+  { icon: Search, text: 'Find cardiologists', color: 'border-purple-500 text-purple-600 hover:bg-purple-500' },
+  { icon: Search, text: 'Search doctors', color: 'border-purple-500 text-purple-600 hover:bg-purple-500' },
+  
+  // Appointments
+  { icon: Calendar, text: 'Book appointment', color: 'border-indigo-500 text-indigo-600 hover:bg-indigo-500' },
+  { icon: Calendar, text: 'My appointments', color: 'border-indigo-500 text-indigo-600 hover:bg-indigo-500' },
+  
+  // Medical Records
+  { icon: FileText, text: 'Medical history', color: 'border-orange-500 text-orange-600 hover:bg-orange-500' },
+  { icon: Pill, text: 'Prescriptions', color: 'border-red-500 text-red-600 hover:bg-red-500' },
+  { icon: Activity, text: 'Lab reports', color: 'border-teal-500 text-teal-600 hover:bg-teal-500' }
+];
   return (
     <div className="flex flex-col h-screen bg-gradient-to-br from-blue-50 to-purple-50">
       {/* Header */}

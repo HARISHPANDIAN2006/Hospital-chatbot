@@ -1,49 +1,82 @@
 class IntentClassifier:
     def classify(self, query: str) -> str:
-        q = query.lower()
-
-        # ---------- REGISTER PATIENT ----------
-        if any(p in q for p in [
-            "register patient", "register a patient", "register new patient",
-            "add patient", "new patient", "enroll patient", "sign up patient",
-            "create patient", "patient registration", "register a new patient"
-        ]):
+        """Classify user query into intents"""
+        query_lower = query.lower()
+        
+        print(f"🔍 CLASSIFYING: '{query_lower}'")
+        
+        # Patient registration
+        if any(keyword in query_lower for keyword in ['register patient', 'new patient', 'add patient']):
+            print("✅ MATCHED: REGISTER_PATIENT")
             return "REGISTER_PATIENT"
-
-        # ---------- BOOK APPOINTMENT ----------
-        if any(p in q for p in [
-            "book appointment", "schedule appointment", "make appointment",
-            "book a appointment", "schedule a visit", "book a visit",
-            "book slot", "set appointment", "fix appointment"
+        
+        # Patient profile
+        if any(keyword in query_lower for keyword in [
+            'patient profile', 'get patient profile', 'view patient', 
+            'show patient profile', 'show patient details', 'patient info',
+            'show me patient'
         ]):
-            return "BOOK_APPOINTMENT"
-
-        # ---------- GET APPOINTMENTS ----------
-        if any(p in q for p in [
-            "my appointments", "my appointment", "view appointments",
-            "show appointments", "list appointments", "check appointments",
-            "upcoming appointments", "appointment history"
-        ]):
-            return "GET_APPOINTMENTS"
-
-        # ---------- SEARCH DOCTORS ----------
-        if any(p in q for p in [
-            "search doctor", "find doctor", "find all doctor",
-            "available doctor", "list doctor", "show doctor",
-            "get doctor", "doctors of", "doctor in",
-            "cardiologist", "neurologist", "dermatologist",
-            "orthopedic", "pediatrician", "gynecologist",
-            "psychiatrist", "oncologist", "radiologist",
-            "specialist", "physician", "surgeon"
-        ]) or (("find" in q or "search" in q or "show" in q or "list" in q or "available" in q) and "doctor" in q):
+            print("✅ MATCHED: GET_PATIENT_PROFILE")
+            return "GET_PATIENT_PROFILE"
+        
+        if any(keyword in query_lower for keyword in ['update patient', 'edit patient', 'modify patient']):
+            print("✅ MATCHED: UPDATE_PATIENT_PROFILE")
+            return "UPDATE_PATIENT_PROFILE"
+        
+        # Doctor search
+        if any(keyword in query_lower for keyword in ['search doctor', 'find doctor', 'cardiologist', 'pediatric', 'specialist', 'doctor']):
+            print("✅ MATCHED: SEARCH_DOCTORS")
             return "SEARCH_DOCTORS"
-
-        # ---------- RAG (knowledge questions) ----------
-        if any(w in q for w in [
-            "what", "when", "where", "how", "why", "who",
-            "rights", "facilities", "services",
-            "visiting", "policy", "hours", "information", "tell me about"
+        
+        if any(keyword in query_lower for keyword in ['doctor info', 'doctor details', 'about doctor']):
+            print("✅ MATCHED: GET_DOCTOR_INFO")
+            return "GET_DOCTOR_INFO"
+        
+        # Appointments
+        if any(keyword in query_lower for keyword in ['book appointment', 'schedule appointment', 'make appointment']):
+            print("✅ MATCHED: BOOK_APPOINTMENT")
+            return "BOOK_APPOINTMENT"
+        
+        if any(keyword in query_lower for keyword in ['my appointments', 'view appointments', 'show appointments', 'list appointments']):
+            print("✅ MATCHED: GET_MY_APPOINTMENTS")
+            return "GET_MY_APPOINTMENTS"
+        
+        if any(keyword in query_lower for keyword in ['reschedule', 'change appointment', 'move appointment']):
+            print("✅ MATCHED: RESCHEDULE_APPOINTMENT")
+            return "RESCHEDULE_APPOINTMENT"
+        
+        if any(keyword in query_lower for keyword in ['cancel appointment', 'delete appointment']):
+            print("✅ MATCHED: CANCEL_APPOINTMENT")
+            return "CANCEL_APPOINTMENT"
+        
+        # Medical records
+        if any(keyword in query_lower for keyword in ['medical history', 'past visits', 'health records']):
+            print("✅ MATCHED: GET_MEDICAL_HISTORY")
+            return "GET_MEDICAL_HISTORY"
+        
+        if any(keyword in query_lower for keyword in ['prescriptions', 'medications', 'medicines']):
+            print("✅ MATCHED: GET_PRESCRIPTIONS")
+            return "GET_PRESCRIPTIONS"
+        
+        if any(keyword in query_lower for keyword in ['lab reports', 'test results', 'lab results']):
+            print("✅ MATCHED: GET_LAB_REPORTS")
+            return "GET_LAB_REPORTS"
+        
+        if any(keyword in query_lower for keyword in ['appointment reminders', 'upcoming appointments', 'next appointments']):
+            print("✅ MATCHED: GET_APPOINTMENT_REMINDERS")
+            return "GET_APPOINTMENT_REMINDERS"
+        
+        if any(keyword in query_lower for keyword in ['health summary', 'health overview', 'medical summary']):
+            print("✅ MATCHED: GET_HEALTH_SUMMARY")
+            return "GET_HEALTH_SUMMARY"
+        
+        # Consultation processing
+        if any(keyword in query_lower for keyword in [
+            'process consultation', 'analyze consultation', 'generate prescription',
+            'consultation audio', 'process appointment audio'
         ]):
-            return "KNOWLEDGE_QUERY"
-
+            print("✅ MATCHED: PROCESS_CONSULTATION")
+            return "PROCESS_CONSULTATION"
+        
+        print("❌ NO MATCH: UNKNOWN")
         return "UNKNOWN"
