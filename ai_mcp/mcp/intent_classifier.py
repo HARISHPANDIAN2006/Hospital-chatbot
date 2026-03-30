@@ -22,7 +22,7 @@ class IntentClassifier:
         if any(keyword in query_lower for keyword in ['update patient', 'edit patient', 'modify patient']):
             print("✅ MATCHED: UPDATE_PATIENT_PROFILE")
             return "UPDATE_PATIENT_PROFILE"
-        
+
         # Doctor search
         if any(keyword in query_lower for keyword in ['search doctor', 'find doctor', 'cardiologist', 'pediatric', 'specialist', 'doctor']):
             print("✅ MATCHED: SEARCH_DOCTORS")

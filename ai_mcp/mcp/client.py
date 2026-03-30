@@ -7,7 +7,7 @@ class MCPClient:
     def call(self, tool_name: str, payload: dict):
         response = requests.post(
             f"{self.base_url}/tool/{tool_name}",
-            json=payload,  # ← Send payload directly, don't wrap it
+            json=payload,  
             timeout=120
         )
         response.raise_for_status()
